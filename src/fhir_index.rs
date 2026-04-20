@@ -124,7 +124,70 @@ fn scan_object(object: Node, source: &str, index: &mut FhirIndex) {
     }
 
     if let (Some(rt), Some(id_val), Some(range)) = (resource_type, id, id_range) {
-        index.definitions.insert(format!("{}/{}", rt, id_val), range);
+        index
+            .definitions
+            .insert(format!("{}/{}", rt, id_val), range);
+    }
+}
+
+// ── cursor-based lookup ──────────────────────────────────────────────────────
+
+/// Walks up from `node` to the nearest enclosing `pair`. If that pair's key
+/// is `"reference"`, returns its string value; otherwise returns `None`.
+fn find_reference_target(node: Node, source: &str) -> Option<String> {
+    let mut current = node;
+    loop {
+        if current.kind() == "pair" {
+            if pair_key(current, source)? == "reference" {
+                let value = current.child_by_field_name("value")?;
+                return string_content(value, source).map(str::to_owned);
+            }
+            return None;
+        }
+        current = current.parent()?;
+    }
+}
+
+/// Walks up from `node` through ancestor `object` nodes until one is found
+/// that has both `resourceType` and `id` direct children, then returns the
+/// canonical key "ResourceType/id".
+fn find_resource_key(node: Node, source: &str) -> Option<String> {
+    let mut current = node;
+    loop {
+        if current.kind() == "object" {
+            let mut resource_type: Option<String> = None;
+            let mut id: Option<String> = None;
+
+            let mut cursor = current.walk();
+            for pair in current.children(&mut cursor) {
+                if pair.kind() != "pair" {
+                    continue;
+                }
+                let Some(key) = pair_key(pair, source) else {
+                    continue;
+                };
+                let Some(value) = pair.child_by_field_name("value") else {
+                    continue;
+                };
+                match key {
+                    "resourceType" => {
+                        resource_type = string_content(value, source).map(str::to_owned);
+                    }
+                    "id" => {
+                        id = string_content(value, source).map(str::to_owned);
+                    }
+                    _ => {}
+                }
+                if resource_type.is_some() && id.is_some() {
+                    break;
+                }
+            }
+
+            if let (Some(rt), Some(id_val)) = (resource_type, id) {
+                return Some(format!("{}/{}", rt, id_val));
+            }
+        }
+        current = current.parent()?;
     }
 }
 
@@ -173,10 +236,7 @@ mod tests {
             index.references.get("Medication/example").map(Vec::len),
             Some(1),
         );
-        assert_eq!(
-            index.references.get("Patient/347").map(Vec::len),
-            Some(1),
-        );
+        assert_eq!(index.references.get("Patient/347").map(Vec::len), Some(1),);
         assert_eq!(index.references.len(), 2, "unexpected extra reference keys");
     }
 
@@ -270,66 +330,5 @@ mod tests {
         assert_eq!(refs.len(), 1);
         // The reference site is on row 29
         assert_eq!(refs[0].start.line, 29);
-    }
-}
-
-// ── cursor-based lookup ──────────────────────────────────────────────────────
-
-/// Walks up from `node` to the nearest enclosing `pair`. If that pair's key
-/// is `"reference"`, returns its string value; otherwise returns `None`.
-fn find_reference_target(node: Node, source: &str) -> Option<String> {
-    let mut current = node;
-    loop {
-        if current.kind() == "pair" {
-            if pair_key(current, source)? == "reference" {
-                let value = current.child_by_field_name("value")?;
-                return string_content(value, source).map(str::to_owned);
-            }
-            return None;
-        }
-        current = current.parent()?;
-    }
-}
-
-/// Walks up from `node` through ancestor `object` nodes until one is found
-/// that has both `resourceType` and `id` direct children, then returns the
-/// canonical key "ResourceType/id".
-fn find_resource_key(node: Node, source: &str) -> Option<String> {
-    let mut current = node;
-    loop {
-        if current.kind() == "object" {
-            let mut resource_type: Option<String> = None;
-            let mut id: Option<String> = None;
-
-            let mut cursor = current.walk();
-            for pair in current.children(&mut cursor) {
-                if pair.kind() != "pair" {
-                    continue;
-                }
-                let Some(key) = pair_key(pair, source) else {
-                    continue;
-                };
-                let Some(value) = pair.child_by_field_name("value") else {
-                    continue;
-                };
-                match key {
-                    "resourceType" => {
-                        resource_type = string_content(value, source).map(str::to_owned);
-                    }
-                    "id" => {
-                        id = string_content(value, source).map(str::to_owned);
-                    }
-                    _ => {}
-                }
-                if resource_type.is_some() && id.is_some() {
-                    break;
-                }
-            }
-
-            if let (Some(rt), Some(id_val)) = (resource_type, id) {
-                return Some(format!("{}/{}", rt, id_val));
-            }
-        }
-        current = current.parent()?;
     }
 }
