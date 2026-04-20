@@ -34,26 +34,13 @@ module.exports = grammar({
     ),
 
     object: $ => seq(
-      '{', commaSep($._key_val), '}',
+      '{', commaSep($.pair), '}',
     ),
 
-    _key_val: $ => choice(
-      $.generic_key_val,
-      $.resource_type
-    ),
-
-    generic_key_val: $ => seq(
+    pair: $ => seq(
       field('key', $.string),
       ':',
       field('value', $._value),
-    ),
-
-    resource_type: $ => prec(1,
-      seq(
-        '"resourceType"',
-        ':',
-        field('value', $._value),
-      )
     ),
 
     array: $ => seq(

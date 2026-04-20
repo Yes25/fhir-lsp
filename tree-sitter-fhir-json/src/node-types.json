@@ -65,7 +65,22 @@
     }
   },
   {
-    "type": "generic_key_val",
+    "type": "object",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "pair",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "pair",
     "named": true,
     "fields": {
       "key": {
@@ -78,41 +93,6 @@
           }
         ]
       },
-      "value": {
-        "multiple": false,
-        "required": true,
-        "types": [
-          {
-            "type": "_value",
-            "named": true
-          }
-        ]
-      }
-    }
-  },
-  {
-    "type": "object",
-    "named": true,
-    "fields": {},
-    "children": {
-      "multiple": true,
-      "required": false,
-      "types": [
-        {
-          "type": "generic_key_val",
-          "named": true
-        },
-        {
-          "type": "resource_type",
-          "named": true
-        }
-      ]
-    }
-  },
-  {
-    "type": "resource_type",
-    "named": true,
-    "fields": {
       "value": {
         "multiple": false,
         "required": true,
@@ -149,10 +129,6 @@
     "named": false
   },
   {
-    "type": "\"resourceType\"",
-    "named": false
-  },
-  {
     "type": ",",
     "named": false
   },
@@ -170,7 +146,8 @@
   },
   {
     "type": "comment",
-    "named": true
+    "named": true,
+    "extra": true
   },
   {
     "type": "escape_sequence",
