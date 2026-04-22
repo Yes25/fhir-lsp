@@ -1,6 +1,8 @@
 use std::collections::HashMap;
-use tower_lsp_server::ls_types::{Position, Range};
+use tower_lsp_server::ls_types::Range;
 use tree_sitter::{Node, Tree};
+
+use crate::ast::{fhir_path_at, pair_key, string_content, to_lsp_range};
 
 /// Holds the extracted FHIR relationships for a single document.
 ///
@@ -33,37 +35,13 @@ impl FhirIndex {
     pub fn definition_key_at(&self, node: Node, source: &str) -> Option<String> {
         find_resource_key(node, source)
     }
-}
 
-// ── tree-sitter helpers ──────────────────────────────────────────────────────
-
-fn to_lsp_range(node: Node) -> Range {
-    Range {
-        start: Position {
-            line: node.start_position().row as u32,
-            character: node.start_position().column as u32,
-        },
-        end: Position {
-            line: node.end_position().row as u32,
-            character: node.end_position().column as u32,
-        },
+    /// Returns the FHIR element path for the field at the cursor position.
+    ///
+    /// Delegates to [`crate::ast::fhir_path_at`].
+    pub fn fhir_path_at(&self, node: Node, source: &str) -> Option<String> {
+        fhir_path_at(node, source)
     }
-}
-
-/// Returns the text inside a `string` node (the content between the quotes).
-fn string_content<'a>(string_node: Node<'a>, source: &'a str) -> Option<&'a str> {
-    let mut cursor = string_node.walk();
-    for child in string_node.children(&mut cursor) {
-        if child.kind() == "string_content" {
-            return child.utf8_text(source.as_bytes()).ok();
-        }
-    }
-    None
-}
-
-/// Returns the text of the key of a `pair` node.
-fn pair_key<'a>(pair: Node<'a>, source: &'a str) -> Option<&'a str> {
-    string_content(pair.child_by_field_name("key")?, source)
 }
 
 // ── index building ───────────────────────────────────────────────────────────
@@ -194,6 +172,7 @@ fn find_resource_key(node: Node, source: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::fhir_path_at;
     use tree_sitter::{Parser, Point};
 
     fn fixture() -> (String, tree_sitter::Tree, FhirIndex) {
@@ -330,5 +309,106 @@ mod tests {
         assert_eq!(refs.len(), 1);
         // The reference site is on row 29
         assert_eq!(refs[0].start.line, 29);
+    }
+
+    // ── fhir_path_at ────────────────────────────────────────────────────────
+
+    #[test]
+    fn path_at_top_level_field_key() {
+        let (source, tree, _) = fixture();
+        // row 6: `  "type" : "searchset",`
+        //          0123  ← col 3 is 't' inside the "type" key string_content
+        let node = node_at(&tree, 6, 3);
+        assert_eq!(
+            fhir_path_at(node, &source),
+            Some("Bundle.type".to_owned()),
+        );
+    }
+
+    #[test]
+    fn path_at_top_level_field_value() {
+        let (source, tree, _) = fixture();
+        // row 6: `  "type" : "searchset",`
+        //                      ^ col 12 = 's' in "searchset" (the value)
+        // Cursor on the value should resolve to the same path as the key.
+        let node = node_at(&tree, 6, 12);
+        assert_eq!(
+            fhir_path_at(node, &source),
+            Some("Bundle.type".to_owned()),
+        );
+    }
+
+    #[test]
+    fn path_at_field_inside_array_element() {
+        let (source, tree, _) = fixture();
+        // row 9: `    "relation" : "self",`
+        //              ^ col 5 = 'r' in "relation"
+        // This object is inside Bundle.link which is an array.
+        let node = node_at(&tree, 9, 5);
+        assert_eq!(
+            fhir_path_at(node, &source),
+            Some("Bundle.link.relation".to_owned()),
+        );
+    }
+
+    #[test]
+    fn path_at_entry_array_field() {
+        let (source, tree, _) = fixture();
+        // row 17: `    "fullUrl" : "https://...",`
+        //               ^ col 5 = 'f' in "fullUrl"
+        // This object is inside Bundle.entry which is an array.
+        let node = node_at(&tree, 17, 5);
+        assert_eq!(
+            fhir_path_at(node, &source),
+            Some("Bundle.entry.fullUrl".to_owned()),
+        );
+    }
+
+    #[test]
+    fn path_at_nested_object_field() {
+        let (source, tree, _) = fixture();
+        // row 22: `        "status" : "generated",`
+        //                   ^ col 9 = 's' in "status"
+        // This is MedicationRequest.text.status (text is an inline object,
+        // not an array, so no array-skipping needed).
+        let node = node_at(&tree, 22, 9);
+        assert_eq!(
+            fhir_path_at(node, &source),
+            Some("MedicationRequest.text.status".to_owned()),
+        );
+    }
+
+    #[test]
+    fn path_at_direct_resource_field() {
+        let (source, tree, _) = fixture();
+        // row 25: `      "status" : "unknown",`
+        //                 ^ col 7 = 's' in "status"
+        // "status" is a direct field of MedicationRequest (no intermediate nesting).
+        let node = node_at(&tree, 25, 7);
+        assert_eq!(
+            fhir_path_at(node, &source),
+            Some("MedicationRequest.status".to_owned()),
+        );
+    }
+
+    #[test]
+    fn path_at_deeply_nested_reference_field() {
+        let (source, tree, _) = fixture();
+        // row 29: `          "reference" : "Medication/example"`
+        //                     ^ col 11 = 'r' in inner "reference" key
+        // Path: MedicationRequest → medication → reference → reference
+        let node = node_at(&tree, 29, 11);
+        assert_eq!(
+            fhir_path_at(node, &source),
+            Some("MedicationRequest.medication.reference.reference".to_owned()),
+        );
+    }
+
+    #[test]
+    fn path_at_returns_none_outside_resource() {
+        let (source, tree, _) = fixture();
+        // row 0: `{`  — the document root brace; not inside any pair
+        let node = node_at(&tree, 0, 0);
+        assert_eq!(fhir_path_at(node, &source), None);
     }
 }
