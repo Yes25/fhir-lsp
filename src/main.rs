@@ -152,6 +152,21 @@ impl LanguageServer for Backend {
             .collect();
         *self.workspace_folders.write().await = folders;
 
+        // Read the FHIR version from initialization options (the universal path —
+        // used by Neovim/lspconfig and any client that passes settings up front).
+        // `workspace/configuration` in `initialized` handles the VS Code / live-
+        // update path on top of this.
+        if let Some(version_str) = params
+            .initialization_options
+            .as_ref()
+            .and_then(|o| o.get("fhirVersion"))
+            .and_then(|v| v.as_str())
+        {
+            if let Some(v) = FhirVersion::from_str(version_str) {
+                *self.fhir_version.write().await = v;
+            }
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
