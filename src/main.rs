@@ -2,7 +2,7 @@ mod ast;
 mod definitions;
 mod fhir_index;
 
-use definitions::{ElementInfo, FhirVersion};
+use definitions::FhirVersion;
 use fhir_index::FhirIndex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -38,6 +38,56 @@ impl Backend {
             documents: RwLock::new(HashMap::new()),
             workspace_folders: RwLock::new(Vec::new()),
             fhir_version: RwLock::new(FhirVersion::default()),
+        }
+    }
+
+    /// Fetches `fhirLsp.fhirVersion` from the client and updates `self.fhir_version`.
+    async fn fetch_config(&self) {
+        use tower_lsp_server::ls_types::ConfigurationItem;
+
+        let result = self
+            .client
+            .configuration(vec![ConfigurationItem {
+                scope_uri: None,
+                section: Some("fhirLsp.fhirVersion".to_string()),
+            }])
+            .await;
+
+        let version_str = match result {
+            Ok(mut values) => values
+                .pop()
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_default(),
+            Err(e) => {
+                self.client
+                    .log_message(MessageType::WARNING, format!("failed to read config: {e}"))
+                    .await;
+                return;
+            }
+        };
+
+        if version_str.is_empty() {
+            return;
+        }
+
+        match FhirVersion::from_str(&version_str) {
+            Some(v) => {
+                *self.fhir_version.write().await = v;
+                self.client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("fhir-lsp: using FHIR {}", v.as_str()),
+                    )
+                    .await;
+            }
+            None => {
+                self.client
+                    .log_message(
+                        MessageType::WARNING,
+                        format!("fhir-lsp: unknown FHIR version \"{version_str}\", keeping default"),
+                    )
+                    .await;
+            }
         }
     }
 
@@ -102,18 +152,6 @@ impl LanguageServer for Backend {
             .collect();
         *self.workspace_folders.write().await = folders;
 
-        // Read the initial FHIR version from initializationOptions if provided.
-        // Clients send this as e.g. { "fhirVersion": "R5" }.
-        if let Some(version) = params
-            .initialization_options
-            .as_ref()
-            .and_then(|o| o.get("fhirVersion"))
-            .and_then(|v| v.as_str())
-            .and_then(FhirVersion::from_str)
-        {
-            *self.fhir_version.write().await = version;
-        }
-
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -166,10 +204,15 @@ impl LanguageServer for Backend {
             }
         }
 
-        let version = self.fhir_version.read().await.as_str();
+        self.fetch_config().await;
+
         self.client
-            .show_message(MessageType::INFO, format!("fhir-lsp initialized (FHIR {version})"))
+            .log_message(MessageType::INFO, "fhir-lsp initialized")
             .await;
+    }
+
+    async fn did_change_configuration(&self, _: DidChangeConfigurationParams) {
+        self.fetch_config().await;
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -205,41 +248,6 @@ impl LanguageServer for Backend {
                 }
                 // CREATED or CHANGED on disk — re-read and re-index.
                 _ => self.index_from_disk(change.uri).await,
-            }
-        }
-    }
-
-    async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        // Clients differ in how they nest settings.  Try the flat form first
-        // ({ "fhirVersion": "R5" }), then the VS Code namespaced form
-        // ({ "fhir-lsp": { "fhirVersion": "R5" } }).
-        let version_str = params
-            .settings
-            .get("fhirVersion")
-            .or_else(|| params.settings.get("fhir-lsp")?.get("fhirVersion"))
-            .and_then(|v| v.as_str());
-
-        let Some(s) = version_str else {
-            return;
-        };
-
-        match FhirVersion::from_str(s) {
-            Some(version) => {
-                *self.fhir_version.write().await = version;
-                self.client
-                    .show_message(
-                        MessageType::INFO,
-                        format!("fhir-lsp: FHIR version changed to {}", version.as_str()),
-                    )
-                    .await;
-            }
-            None => {
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        format!("fhir-lsp: unknown FHIR version {s:?}, ignoring"),
-                    )
-                    .await;
             }
         }
     }
@@ -371,64 +379,11 @@ impl LanguageServer for Backend {
         Ok(Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: render_hover(&path, info),
+                value: info.render_hover(&path),
             }),
             range: None,
         }))
     }
-}
-
-/// Renders an [`ElementInfo`] as a Markdown hover string.
-///
-/// Format:
-/// ```text
-/// `HumanName` · `0..*`
-///
-/// A name associated with the patient.
-///
-/// A name associated with the individual.
-///
-/// **Constraints**
-/// - SHALL have at least a family or given name
-/// ```
-fn render_hover(path: &str, info: &ElementInfo) -> String {
-    let mut md = String::new();
-
-    // Signature line: type(s) and cardinality
-    let types_str = info
-        .types
-        .iter()
-        .map(|t| format!("`{t}`"))
-        .collect::<Vec<_>>()
-        .join(" | ");
-    let cardinality = format!("`{}..{}`", info.min, info.max);
-
-    if types_str.is_empty() {
-        md.push_str(&format!("**{path}** · {cardinality}"));
-    } else {
-        md.push_str(&format!("**{path}** · {types_str} · {cardinality}"));
-    }
-    md.push_str("\n\n");
-
-    // Short description
-    if let Some(short) = &info.short {
-        md.push_str(&format!("\n{short}\n\n"));
-    }
-
-    // Longer definition (only present when it differs from short)
-    if let Some(definition) = &info.definition {
-        md.push_str(&format!("**--- Definition ---**\n{definition}\n\n"));
-    }
-
-    // Field-specific constraints
-    if !info.constraints.is_empty() {
-        md.push_str("`Constraints`\n\n");
-        for c in &info.constraints {
-            md.push_str(&format!("- {c}\n"));
-        }
-    }
-
-    md.trim_end().to_owned()
 }
 
 #[tokio::main]

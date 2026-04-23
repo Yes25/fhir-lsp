@@ -15,12 +15,9 @@ static R4_COMPRESSED: &[u8] = include_bytes!("../assets/fhir_r4.json.zst");
 static R4B_COMPRESSED: &[u8] = include_bytes!("../assets/fhir_r4b.json.zst");
 static R5_COMPRESSED: &[u8] = include_bytes!("../assets/fhir_r5.json.zst");
 
-static R4_DEFS: LazyLock<HashMap<String, ElementInfo>> =
-    LazyLock::new(|| load(R4_COMPRESSED));
-static R4B_DEFS: LazyLock<HashMap<String, ElementInfo>> =
-    LazyLock::new(|| load(R4B_COMPRESSED));
-static R5_DEFS: LazyLock<HashMap<String, ElementInfo>> =
-    LazyLock::new(|| load(R5_COMPRESSED));
+static R4_DEFS: LazyLock<HashMap<String, ElementInfo>> = LazyLock::new(|| load(R4_COMPRESSED));
+static R4B_DEFS: LazyLock<HashMap<String, ElementInfo>> = LazyLock::new(|| load(R4B_COMPRESSED));
+static R5_DEFS: LazyLock<HashMap<String, ElementInfo>> = LazyLock::new(|| load(R5_COMPRESSED));
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -68,6 +65,61 @@ pub struct ElementInfo {
     pub definition: Option<String>,
     #[serde(default)]
     pub constraints: Vec<String>,
+}
+
+impl ElementInfo {
+    /// Renders an [`ElementInfo`] as a Markdown hover string.
+    ///
+    /// Format:
+    /// ```text
+    /// `HumanName` · `0..*`
+    ///
+    /// A name associated with the patient.
+    ///
+    /// A name associated with the individual.
+    ///
+    /// **Constraints**
+    /// - SHALL have at least a family or given name
+    /// ```
+    pub fn render_hover(&self, path: &str) -> String {
+        let mut md = String::new();
+
+        // Signature line: type(s) and cardinality
+        let types_str = self
+            .types
+            .iter()
+            .map(|t| format!("`{t}`"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let cardinality = format!("`{}..{}`", self.min, self.max);
+
+        if types_str.is_empty() {
+            md.push_str(&format!("**{path}** · {cardinality}"));
+        } else {
+            md.push_str(&format!("**{path}** · {types_str} · {cardinality}"));
+        }
+        md.push_str("\n\n");
+
+        // Short description
+        if let Some(short) = &self.short {
+            md.push_str(&format!("\n{short}\n\n"));
+        }
+
+        // Longer definition (only present when it differs from short)
+        if let Some(definition) = &self.definition {
+            md.push_str(&format!("**--- Definition ---**\n{definition}\n\n"));
+        }
+
+        // Field-specific constraints
+        if !self.constraints.is_empty() {
+            md.push_str("`Constraints`\n\n");
+            for c in &self.constraints {
+                md.push_str(&format!("- {c}\n"));
+            }
+        }
+
+        md.trim_end().to_owned()
+    }
 }
 
 // ── Loading ──────────────────────────────────────────────────────────────────
