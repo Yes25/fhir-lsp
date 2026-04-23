@@ -107,7 +107,7 @@ impl ElementInfo {
 
         // Longer definition (only present when it differs from short)
         if let Some(definition) = &self.definition {
-            md.push_str(&format!("**--- Definition ---**\n{definition}\n\n"));
+            md.push_str(&format!("**Definition:**\n{definition}\n\n"));
         }
 
         // Field-specific constraints

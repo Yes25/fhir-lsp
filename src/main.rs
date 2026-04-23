@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, RwLock};
 use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::ConfigurationItem;
 use tower_lsp_server::ls_types::*;
 use tower_lsp_server::{Client, LanguageServer, LspService, Server};
 use tree_sitter::{Parser, Point, Tree};
@@ -43,8 +44,6 @@ impl Backend {
 
     /// Fetches `fhirLsp.fhirVersion` from the client and updates `self.fhir_version`.
     async fn fetch_config(&self) {
-        use tower_lsp_server::ls_types::ConfigurationItem;
-
         let result = self
             .client
             .configuration(vec![ConfigurationItem {
@@ -84,7 +83,9 @@ impl Backend {
                 self.client
                     .log_message(
                         MessageType::WARNING,
-                        format!("fhir-lsp: unknown FHIR version \"{version_str}\", keeping default"),
+                        format!(
+                            "fhir-lsp: unknown FHIR version \"{version_str}\", keeping default"
+                        ),
                     )
                     .await;
             }
@@ -156,15 +157,14 @@ impl LanguageServer for Backend {
         // used by Neovim/lspconfig and any client that passes settings up front).
         // `workspace/configuration` in `initialized` handles the VS Code / live-
         // update path on top of this.
-        if let Some(version_str) = params
+        if let Some(v) = params
             .initialization_options
             .as_ref()
             .and_then(|o| o.get("fhirVersion"))
             .and_then(|v| v.as_str())
+            .and_then(FhirVersion::from_str)
         {
-            if let Some(v) = FhirVersion::from_str(version_str) {
-                *self.fhir_version.write().await = v;
-            }
+            *self.fhir_version.write().await = v;
         }
 
         Ok(InitializeResult {
@@ -223,6 +223,14 @@ impl LanguageServer for Backend {
 
         self.client
             .log_message(MessageType::INFO, "fhir-lsp initialized")
+            .await;
+
+        let cur_fhir_version = self.fhir_version.read().await.as_str();
+        self.client
+            .show_message(
+                MessageType::INFO,
+                format!("Using FHIR {}", cur_fhir_version),
+            )
             .await;
     }
 
