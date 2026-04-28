@@ -141,3 +141,76 @@ pub fn for_version(version: FhirVersion) -> &'static HashMap<String, ElementInfo
         FhirVersion::R5 => &R5_DEFS,
     }
 }
+
+/// Resolves a FHIR element path to its [`ElementInfo`], following type
+/// references for complex types.
+///
+/// A direct lookup is tried first and covers resource-level fields and
+/// backbone elements (e.g. `MedicationRequest.dispenseRequest.quantity`).
+///
+/// When that fails the function recurses on the parent path, resolves its type,
+/// and looks up the child field under the type name:
+///
+/// ```text
+/// "Patient.name.family"
+///   → parent "Patient.name" found → type HumanName
+///   → look up "HumanName.family" → found
+///
+/// "Patient.name.period.start"
+///   → parent "Patient.name.period" not found directly
+///   → parent "Patient.name" found → type HumanName
+///   → "HumanName.period" found → type Period
+///   → "Period.start" found
+/// ```
+pub fn resolve_path<'a>(
+    path: &str,
+    defs: &'a HashMap<String, ElementInfo>,
+) -> Option<&'a ElementInfo> {
+    if let Some(info) = defs.get(path) {
+        return Some(info);
+    }
+
+    let dot = path.rfind('.')?;
+    let parent_path = &path[..dot];
+    let child = &path[dot + 1..];
+
+    let parent_info = resolve_path(parent_path, defs)?;
+
+    match parent_info.types.as_slice() {
+        // BackboneElement children live under their full path, so a failed direct
+        // lookup means the path genuinely does not exist.
+        [t] if t == "BackboneElement" => None,
+        // Named complex type: look up the child field under the type name.
+        [t] if !is_fhir_primitive(t) && t != "Resource" => {
+            defs.get(&format!("{t}.{child}"))
+        }
+        _ => None,
+    }
+}
+
+/// Returns `true` for FHIR primitive type names that have no sub-fields.
+pub fn is_fhir_primitive(t: &str) -> bool {
+    matches!(
+        t,
+        "string"
+            | "code"
+            | "boolean"
+            | "integer"
+            | "decimal"
+            | "uri"
+            | "url"
+            | "canonical"
+            | "base64Binary"
+            | "instant"
+            | "date"
+            | "dateTime"
+            | "time"
+            | "oid"
+            | "id"
+            | "markdown"
+            | "unsignedInt"
+            | "positiveInt"
+            | "uuid"
+            | "xhtml"
+    )
+}

@@ -1,5 +1,6 @@
 mod ast;
 mod definitions;
+mod diagnostics;
 mod fhir_index;
 
 use definitions::FhirVersion;
@@ -96,11 +97,15 @@ impl Backend {
         let tree = self.parser.lock().await.parse(&text, None);
         match tree {
             Some(tree) => {
+                let version = *self.fhir_version.read().await;
+                let defs = definitions::for_version(version);
+                let diags = diagnostics::validate(&tree, &text, defs);
                 let index = FhirIndex::build(&tree, &text);
                 self.documents
                     .write()
                     .await
-                    .insert(uri, DocumentState { text, tree, index });
+                    .insert(uri.clone(), DocumentState { text, tree, index });
+                self.client.publish_diagnostics(uri, diags, None).await;
             }
             None => {
                 self.client
@@ -268,6 +273,9 @@ impl LanguageServer for Backend {
             match change.typ {
                 FileChangeType::DELETED => {
                     self.documents.write().await.remove(&change.uri);
+                    self.client
+                        .publish_diagnostics(change.uri, vec![], None)
+                        .await;
                 }
                 // CREATED or CHANGED on disk — re-read and re-index.
                 _ => self.index_from_disk(change.uri).await,
@@ -301,6 +309,9 @@ impl LanguageServer for Backend {
 
         // Only makes sense when the cursor is on a `"reference"` value.
         let Some(ref_key) = doc.index.reference_at(node, &doc.text) else {
+            self.client
+                .show_message(MessageType::INFO, "No reference found at cursor.")
+                .await;
             return Ok(None);
         };
 
@@ -314,6 +325,12 @@ impl LanguageServer for Backend {
             }
         }
 
+        self.client
+            .show_message(
+                MessageType::WARNING,
+                format!("No definition found for \"{}\".", ref_key),
+            )
+            .await;
         Ok(None)
     }
 
@@ -346,6 +363,9 @@ impl LanguageServer for Backend {
             .reference_at(node, &doc.text)
             .or_else(|| doc.index.definition_key_at(node, &doc.text))
         else {
+            self.client
+                .show_message(MessageType::INFO, "No reference or resource found at cursor.")
+                .await;
             return Ok(None);
         };
 
@@ -363,6 +383,12 @@ impl LanguageServer for Backend {
         }
 
         if locations.is_empty() {
+            self.client
+                .show_message(
+                    MessageType::WARNING,
+                    format!("No references found for \"{}\".", key),
+                )
+                .await;
             Ok(None)
         } else {
             Ok(Some(locations))
@@ -395,7 +421,7 @@ impl LanguageServer for Backend {
         };
 
         let defs = definitions::for_version(*self.fhir_version.read().await);
-        let Some(info) = defs.get(&path) else {
+        let Some(info) = definitions::resolve_path(&path, defs) else {
             return Ok(None);
         };
 
