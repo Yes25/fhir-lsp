@@ -4,7 +4,7 @@ use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, Position, Range
 use tree_sitter::{Node, Tree};
 
 use crate::ast::{object_resource_type, pair_key, to_lsp_range};
-use crate::definitions::{is_fhir_primitive, ElementInfo};
+use crate::definitions::{child_lookup_prefix, find_choice_type, ElementInfo};
 
 /// Validates a parsed FHIR JSON document and returns a list of LSP diagnostics.
 ///
@@ -206,14 +206,10 @@ fn descend<'tree>(
 
 /// Returns the FHIR path prefix to use when validating children of `field_path`.
 ///
-/// Returns `None` when the field has no structured child definitions to check.
+/// Delegates entirely to [`child_lookup_prefix`], which handles regular fields,
+/// backbone elements, and choice types uniformly and recursively.
 fn child_validation_path(field_path: &str, defs: &HashMap<String, ElementInfo>) -> Option<String> {
-    let info = defs.get(field_path)?;
-    match info.types.as_slice() {
-        [t] if t == "BackboneElement" => Some(field_path.to_owned()),
-        [t] if !is_fhir_primitive(t) && t != "Resource" => Some(t.to_owned()),
-        _ => None,
-    }
+    child_lookup_prefix(field_path, defs)
 }
 
 // ── Field-level checks ────────────────────────────────────────────────────────
@@ -226,7 +222,11 @@ fn check_present_fields(
 ) {
     for (field, occ) in present {
         let path = format!("{fhir_path}.{field}");
-        let Some(info) = defs.get(&path) else {
+        // For choice types (e.g. "itemCodeableConcept"), fall back to the "[x]" entry.
+        let Some(info) = defs
+            .get(&path)
+            .or_else(|| find_choice_type(fhir_path, field, defs).map(|(i, _)| i))
+        else {
             continue;
         };
 

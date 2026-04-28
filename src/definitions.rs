@@ -142,25 +142,68 @@ pub fn for_version(version: FhirVersion) -> &'static HashMap<String, ElementInfo
     }
 }
 
+/// Returns the defs lookup prefix to use when accessing children of `path`.
+///
+/// This is the single source of truth for type resolution across hover and
+/// diagnostics. It handles three cases recursively:
+///
+/// - **Direct** (`"Patient.name"` → type `HumanName`): return `"HumanName"`.
+/// - **Backbone** (`"MedicationRequest.dispenseRequest"` → `BackboneElement`):
+///   return the full path, because children live under it in defs.
+/// - **Choice type** (`"Medication.ingredient.itemCodeableConcept"`): resolve
+///   the parent prefix, find the `item[x]` entry, extract the concrete type
+///   suffix `"CodeableConcept"`, and return it.
+///
+/// Returns `None` for primitives, multi-type fields, or unrecognised paths.
+pub fn child_lookup_prefix(path: &str, defs: &HashMap<String, ElementInfo>) -> Option<String> {
+    // Direct lookup covers resource-level fields, backbone elements, and
+    // single-type complex fields (HumanName, Period, …).
+    if let Some(info) = defs.get(path) {
+        return classify_child_prefix(info, path);
+    }
+
+    // Recursive: resolve through type references and choice types.
+    let dot = path.rfind('.')?;
+    let parent_path = &path[..dot];
+    let field = &path[dot + 1..];
+
+    let parent_prefix = child_lookup_prefix(parent_path, defs)?;
+
+    // Regular field under the resolved parent prefix.
+    let full_field_path = format!("{parent_prefix}.{field}");
+    if let Some(info) = defs.get(&full_field_path) {
+        return classify_child_prefix(info, &full_field_path);
+    }
+
+    // Choice type field under the resolved parent prefix.
+    let (_, type_name) = find_choice_type(&parent_prefix, field, defs)?;
+    if is_fhir_primitive(&type_name) || type_name == "Resource" {
+        None
+    } else {
+        Some(type_name)
+    }
+}
+
+/// Returns what prefix to use for looking up children of a field, given its
+/// [`ElementInfo`] and the path it was found at.
+fn classify_child_prefix(info: &ElementInfo, path: &str) -> Option<String> {
+    match info.types.as_slice() {
+        [t] if t == "BackboneElement" => Some(path.to_owned()),
+        [t] if !is_fhir_primitive(t) && t != "Resource" => Some(t.to_owned()),
+        _ => None,
+    }
+}
+
 /// Resolves a FHIR element path to its [`ElementInfo`], following type
-/// references for complex types.
-///
-/// A direct lookup is tried first and covers resource-level fields and
-/// backbone elements (e.g. `MedicationRequest.dispenseRequest.quantity`).
-///
-/// When that fails the function recurses on the parent path, resolves its type,
-/// and looks up the child field under the type name:
+/// references and choice types at every level.
 ///
 /// ```text
-/// "Patient.name.family"
-///   → parent "Patient.name" found → type HumanName
-///   → look up "HumanName.family" → found
-///
-/// "Patient.name.period.start"
-///   → parent "Patient.name.period" not found directly
-///   → parent "Patient.name" found → type HumanName
-///   → "HumanName.period" found → type Period
-///   → "Period.start" found
+/// "Patient.name.family"          → HumanName.family  (via type reference)
+/// "Patient.name.period.start"    → Period.start       (two hops)
+/// "Medication.ingredient.itemCodeableConcept"
+///                                → item[x] ElementInfo (choice type)
+/// "Medication.ingredient.itemCodeableConcept.coding"
+///                                → CodeableConcept.coding (choice type + child)
 /// ```
 pub fn resolve_path<'a>(
     path: &str,
@@ -174,18 +217,44 @@ pub fn resolve_path<'a>(
     let parent_path = &path[..dot];
     let child = &path[dot + 1..];
 
-    let parent_info = resolve_path(parent_path, defs)?;
+    // Use child_lookup_prefix to determine where children of parent_path live.
+    let child_prefix = child_lookup_prefix(parent_path, defs)?;
 
-    match parent_info.types.as_slice() {
-        // BackboneElement children live under their full path, so a failed direct
-        // lookup means the path genuinely does not exist.
-        [t] if t == "BackboneElement" => None,
-        // Named complex type: look up the child field under the type name.
-        [t] if !is_fhir_primitive(t) && t != "Resource" => {
-            defs.get(&format!("{t}.{child}"))
-        }
-        _ => None,
+    if let Some(info) = defs.get(&format!("{child_prefix}.{child}")) {
+        return Some(info);
     }
+
+    find_choice_type(&child_prefix, child, defs).map(|(info, _)| info)
+}
+
+/// Searches `defs` for a choice-type entry (`{prefix}.{base}[x]`) whose base
+/// is a prefix of `concrete_field` followed immediately by a PascalCase type
+/// suffix.
+///
+/// Returns the matching [`ElementInfo`] and the concrete type name as an owned
+/// `String` (e.g. `"CodeableConcept"` for concrete field `"itemCodeableConcept"`).
+pub fn find_choice_type<'a>(
+    prefix: &str,
+    concrete_field: &str,
+    defs: &'a HashMap<String, ElementInfo>,
+) -> Option<(&'a ElementInfo, String)> {
+    let full_prefix = format!("{prefix}.");
+    for (key, info) in defs {
+        if !key.starts_with(&full_prefix) {
+            continue;
+        }
+        let rest = &key[full_prefix.len()..];
+        if !rest.ends_with("[x]") || rest.contains('.') {
+            continue;
+        }
+        let base = &rest[..rest.len() - 3];
+        if let Some(suffix) = concrete_field.strip_prefix(base) {
+            if suffix.starts_with(|c: char| c.is_uppercase()) {
+                return Some((info, suffix.to_owned()));
+            }
+        }
+    }
+    None
 }
 
 /// Returns `true` for FHIR primitive type names that have no sub-fields.
