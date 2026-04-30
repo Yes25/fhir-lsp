@@ -81,12 +81,20 @@ def normalise_type_code(type_entry: dict) -> str:
     FHIR uses `http://hl7.org/fhirpath/System.String` (and siblings) for
     primitive types.  The real FHIR name is carried in the
     `structuredefinition-fhir-type` extension.
+
+    When a single profile URL is present (e.g. SimpleQuantity constraining
+    Quantity), use the last URL segment as the type name so that child
+    validation resolves against the profile's own element definitions rather
+    than the unconstrained base type.
     """
     code: str = type_entry.get("code", "")
     if "fhirpath" in code:
         for ext in type_entry.get("extension", []):
             if ext.get("url") == FHIRPATH_TYPE_EXT:
                 return ext.get("valueUrl", code)
+    profiles: list = type_entry.get("profile", [])
+    if len(profiles) == 1:
+        return profiles[0].rstrip("/").rsplit("/", 1)[-1]
     return code
 
 
@@ -103,12 +111,34 @@ def extract_constraints(element: dict) -> list[str]:
 
 
 def extract_elements(sd: dict) -> dict[str, dict]:
-    """Extract all ElementDefinitions from a single StructureDefinition."""
+    """Extract all ElementDefinitions from a single StructureDefinition.
+
+    For constraint profiles (e.g. SimpleQuantity, a constrained Quantity), the
+    snapshot reuses the base type's path prefix ("Quantity.*"). We remap those
+    paths to the profile's own name ("SimpleQuantity.*") so they never overwrite
+    base-type entries and can be looked up independently when a field declares
+    that specific profile as its type.
+    """
     elements: dict[str, dict] = {}
 
-    snapshot = sd.get("snapshot", {})
-    for el in snapshot.get("element", []):
+    all_els = sd.get("snapshot", {}).get("element", [])
+    profile_name: str = sd.get("name", "")
+
+    # Determine path remapping for constraint profiles.
+    # The root element (first snapshot entry) carries the base type's path,
+    # e.g. "Quantity" for SimpleQuantity. If that differs from the SD name we
+    # prefix-replace so all paths use the profile name.
+    base_prefix = ""
+    if sd.get("derivation") == "constraint" and all_els:
+        root_path = all_els[0].get("path", "")
+        if root_path and root_path != profile_name:
+            base_prefix = root_path  # e.g. "Quantity"
+
+    for idx, el in enumerate(all_els):
         path: str = el.get("path", "")
+
+        if base_prefix and path.startswith(base_prefix):
+            path = profile_name + path[len(base_prefix):]
 
         # Skip the root element (e.g. bare "Patient" or "HumanName") — it has
         # no field-level information relevant to hover on a JSON key.
@@ -121,6 +151,7 @@ def extract_elements(sd: dict) -> dict[str, dict]:
         entry: dict = {
             "min": el.get("min"),
             "max": el.get("max"),
+            "order": idx,
         }
         if types:
             entry["types"] = types

@@ -195,7 +195,7 @@ pub fn child_lookup_prefix(path: &str, defs: &HashMap<String, ElementInfo>) -> O
 /// [`ElementInfo`] and the path it was found at.
 fn classify_child_prefix(info: &ElementInfo, path: &str) -> Option<String> {
     match info.types.as_slice() {
-        [t] if t == "BackboneElement" => Some(path.to_owned()),
+        [t] if t == "BackboneElement" || t == "Element" => Some(path.to_owned()),
         [t] if !is_fhir_primitive(t) && t != "Resource" => Some(t.to_owned()),
         _ => None,
     }
