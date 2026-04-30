@@ -163,7 +163,12 @@ pub fn child_lookup_prefix(path: &str, defs: &HashMap<String, ElementInfo>) -> O
     }
 
     // Recursive: resolve through type references and choice types.
-    let dot = path.rfind('.')?;
+    let Some(dot) = path.rfind('.') else {
+        // Bare type name with no dot (e.g. "Extension", "CodeableConcept").
+        // These are valid prefixes — their children live under "{type}.field" in
+        // defs — so return the name itself as the prefix.
+        return Some(path.to_owned());
+    };
     let parent_path = &path[..dot];
     let field = &path[dot + 1..];
 

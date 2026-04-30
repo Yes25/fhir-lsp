@@ -1,13 +1,3 @@
-//! Tree-sitter AST traversal primitives for FHIR JSON documents.
-//!
-//! This module provides low-level helpers for navigating the parse tree
-//! produced by the `tree-sitter-fhir-json` grammar.  Nothing here knows about
-//! indexes, LSP handlers, or FHIR semantics beyond the structural conventions
-//! of FHIR JSON (the `resourceType` field, dotted element paths, etc.).
-//!
-//! These primitives are shared by index building, hover, validation, and any
-//! other feature that needs to inspect or walk the AST.
-
 use tower_lsp_server::ls_types::{Position, Range};
 use tree_sitter::Node;
 
