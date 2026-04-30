@@ -60,6 +60,8 @@ pub struct ElementInfo {
     pub min: u32,
     pub max: String,
     #[serde(default)]
+    pub order: u32,
+    #[serde(default)]
     pub types: Vec<String>,
     pub short: Option<String>,
     pub definition: Option<String>,

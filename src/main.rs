@@ -2,6 +2,7 @@ mod ast;
 mod definitions;
 mod diagnostics;
 mod fhir_index;
+mod formatter;
 
 use definitions::FhirVersion;
 use fhir_index::FhirIndex;
@@ -180,6 +181,7 @@ impl LanguageServer for Backend {
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                document_formatting_provider: Some(OneOf::Left(true)),
                 workspace: Some(WorkspaceServerCapabilities {
                     workspace_folders: Some(WorkspaceFoldersServerCapabilities {
                         supported: Some(true),
@@ -432,6 +434,24 @@ impl LanguageServer for Backend {
             }),
             range: None,
         }))
+    }
+
+    async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = params.text_document.uri;
+        let documents = self.documents.read().await;
+        let Some(doc) = documents.get(&uri) else {
+            return Ok(None);
+        };
+        let defs = definitions::for_version(*self.fhir_version.read().await);
+        Ok(formatter::format_document(
+            &doc.text,
+            params.options.insert_spaces,
+            params.options.tab_size,
+            defs,
+        ))
     }
 }
 

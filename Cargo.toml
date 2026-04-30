@@ -9,6 +9,6 @@ tree-sitter-fhir-json = { path = "tree-sitter-fhir-json" }
 tower-lsp-server = "0.23.0"
 tokio = { version = "1.52.1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
 tracing-subscriber = "0.3.23"
 zstd = "0.13"
