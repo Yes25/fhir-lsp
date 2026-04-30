@@ -5,30 +5,42 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
-    name: Build ${{ matrix.artifact }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: fhir-lsp-linux-x86_64
+            binary: fhir-lsp
+            archive: tar.gz
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary: fhir-lsp
+            archive: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: fhir-lsp-macos-aarch64
+            binary: fhir-lsp
+            archive: tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: fhir-lsp-macos-x86_64
+            binary: fhir-lsp
+            archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: fhir-lsp-windows-x86_64.exe
+            binary: fhir-lsp.exe
+            archive: zip
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install zstd (Ubuntu)
+      - name: Install zstd (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get install -y zstd
 
@@ -43,44 +55,57 @@ jobs:
       - name: Compress assets
         run: bash scripts/compress_assets.sh
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install aarch64 Linux cross-compiler
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
 
-      - name: Stage binary (Unix)
-        if: runner.os != 'Windows'
-        run: cp target/${{ matrix.target }}/release/fhir-lsp ${{ matrix.artifact }}
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          tar -czf fhir-lsp-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release \
+            ${{ matrix.binary }}
 
-      - name: Stage binary (Windows)
-        if: runner.os == 'Windows'
-        run: cp target/${{ matrix.target }}/release/fhir-lsp.exe ${{ matrix.artifact }}
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path target/${{ matrix.target }}/release/${{ matrix.binary }} `
+            -DestinationPath fhir-lsp-${{ matrix.target }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          name: fhir-lsp-${{ matrix.target }}
+          path: fhir-lsp-${{ matrix.target }}.${{ matrix.archive }}
 
   release:
-    name: Create release
+    name: Create GitHub release
     needs: build
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
-            fhir-lsp-linux-x86_64/fhir-lsp-linux-x86_64
-            fhir-lsp-macos-aarch64/fhir-lsp-macos-aarch64
-            fhir-lsp-macos-x86_64/fhir-lsp-macos-x86_64
-            fhir-lsp-windows-x86_64.exe/fhir-lsp-windows-x86_64.exe
+            fhir-lsp-*.tar.gz
+            fhir-lsp-*.zip
